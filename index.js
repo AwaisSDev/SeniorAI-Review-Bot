@@ -1,6 +1,6 @@
 const express = require("express");
-const { verifyWebhook } = require("./webhooks/verify");
-const { handlePREvent } = require("./bot/handler");
+const { verifyWebhook } = require("./verify");
+const { handlePREvent } = require("./handler");
 
 const app = express();
 app.use(express.json());

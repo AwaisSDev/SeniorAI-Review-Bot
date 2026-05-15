@@ -1,4 +1,4 @@
-const { postPRComment, getPRFiles } = require("../github_app/client");
+const { postPRComment, getPRFiles } = require("./client");
 
 async function handlePREvent(payload) {
   const { pull_request, repository } = payload;
