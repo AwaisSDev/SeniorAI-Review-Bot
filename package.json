@@ -1,0 +1,17 @@
+{
+  "name": "ai-pr-reviewer-bot",
+  "version": "0.1.0",
+  "description": "AI-powered GitHub PR review bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
