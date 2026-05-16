@@ -1,51 +1,22 @@
-const { Octokit } = require("@octokit/rest");
-
-function getOctokit() {
-  return new Octokit({
-    auth: process.env.GITHUB_TOKEN,
-  });
-}
-
-// Post a comment on a PR
-async function postPRComment(owner, repo, prNumber, body) {
+// Get file content from a specific branch
+async function getFileContent(owner, repo, path, branch) {
   const octokit = getOctokit();
 
-  const response = await octokit.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
+  try {
+    const response = await octokit.repos.getContent({
+      owner,
+      repo,
+      path,
+      ref: branch,
+    });
 
-  console.log(`✅ Comment posted on PR #${prNumber}`);
-  return response.data;
+    if (response.data.encoding === "base64") {
+      return Buffer.from(response.data.content, "base64").toString("utf8");
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
 }
 
-// Fetch the diff of a PR
-async function getPRDiff(owner, repo, prNumber) {
-  const octokit = getOctokit();
-
-  const response = await octokit.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-    mediaType: { format: "diff" },
-  });
-
-  return response.data;
-}
-
-// Get list of files changed in a PR
-async function getPRFiles(owner, repo, prNumber) {
-  const octokit = getOctokit();
-
-  const response = await octokit.pulls.listFiles({
-    owner,
-    repo,
-    pull_number: prNumber,
-  });
-
-  return response.data;
-}
-
-module.exports = { postPRComment, getPRDiff, getPRFiles };
+module.exports = { postPRComment, getPRDiff, getPRFiles, getFileContent };
