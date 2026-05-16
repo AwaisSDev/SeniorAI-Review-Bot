@@ -176,7 +176,17 @@ const RULES = [
         pattern: /\/\/\s*(TODO|FIXME|HACK|XXX)/gi,
         message: "Unresolved TODO/FIXME found.",
     },
+    // ============ ENTROPY SECRET ============
+    {
+        id: "high_entropy_secret",
+        severity: "HIGH",
+        // placeholder pattern – real detection performed in engine
+        pattern: /[A-Za-z0-9+/=]{20,}/g,
+        message: "Potential high‑entropy secret detected. Verify and remove.",
+    },
 ];
+
+const ENTROPY_THRESHOLD = 3.5;
 
 const SEVERITY_EMOJI = {
     CRITICAL: "🚨",
@@ -187,19 +197,150 @@ const SEVERITY_EMOJI = {
 
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 
+// List of file extensions each rule applies to (empty => all)
+const EXTENSION_MAP = {
+    hardcoded_api_key: ['js', 'php', 'py'],
+    hardcoded_password: ['js', 'php', 'py'],
+    hardcoded_secret: ['js', 'php', 'py'],
+    github_token: ['js', 'php', 'py'],
+    aws_key: ['js', 'php', 'py'],
+    private_key_block: ['js', 'php', 'py'],
+    eval_usage: ['js'],
+    inner_html: ['js'],
+    document_write: ['js'],
+    prototype_pollution: ['js'],
+    php_eval: ['php'],
+    php_system: ['php'],
+    php_include_user: ['php'],
+    php_sql_concat: ['php'],
+    php_extract: ['php'],
+    php_preg_replace_e: ['php'],
+    php_xss_echo: ['php'],
+    php_file_user: ['php'],
+    php_display_errors: ['php'],
+    php_hardcoded_db: ['php'],
+    python_exec: ['py'],
+    python_pickle: ['py'],
+    python_shell_true: ['py'],
+    sql_concat_js: ['js'],
+    cors_wildcard: [],
+    console_log: ['js'],
+    debugger: [],
+    todo_comment: [],
+    high_entropy_secret: []
+};
+
+// Simple allow‑list of patterns that are usually false positives (e.g., test data)
+const ALLOWLIST = [
+    /test_key/i,
+    /dummy_password/i,
+    /example_secret/i,
+];
+
+/** Compute Shannon entropy for a string */
+function shannonEntropy(data) {
+    const len = data.length;
+    const frequencies = {};
+    for (const char of data) frequencies[char] = (frequencies[char] || 0) + 1;
+    return Object.values(frequencies).reduce((sum, count) => {
+        const p = count / len;
+        return sum - p * Math.log2(p);
+    }, 0);
+}
+
+/**
+ * Parse a unified diff into per‑file hunks with line numbers.
+ * Returns a map: filename → array of { lineNumber, text } for added lines.
+ */
+function parseDiff(diff) {
+    const fileMap = {};
+    const lines = diff.split('\n');
+    let currentFile = null;
+    let newLineNum = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const fileHeader = line.match(/^diff --git a\/([^ ]+) b\/([^ ]+)/);
+        if (fileHeader) {
+            currentFile = fileHeader[2];
+            fileMap[currentFile] = [];
+            continue;
+        }
+        const hunkHeader = line.match(/^@@ -\d+,\d+ \+(\d+),\d+ @@/);
+        if (hunkHeader) {
+            newLineNum = parseInt(hunkHeader[1], 10) - 1; // will be incremented before first line
+            continue;
+        }
+        if (!currentFile) continue;
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+            newLineNum++;
+            fileMap[currentFile].push({ lineNumber: newLineNum, text: line.slice(1) });
+        } else if (!line.startsWith('-')) {
+            newLineNum++;
+        }
+    }
+    return fileMap;
+}
+
+function ruleAppliesToFile(ruleId, filename) {
+    const exts = EXTENSION_MAP[ruleId];
+    if (!exts || exts.length === 0) return true;
+    const fileExt = filename.split('.').pop();
+    return exts.includes(fileExt);
+}
+
+function isAllowlisted(match) {
+    return ALLOWLIST.some(re => re.test(match));
+}
+
 function runRulesEngine(diff, files) {
     const findings = [];
+    const fileDiffMap = parseDiff(diff);
 
+    // First pass – pattern based rules
     for (const rule of RULES) {
-        rule.pattern.lastIndex = 0;
-        const matches = diff.match(rule.pattern);
-        if (matches) {
-            findings.push({
-                id: rule.id,
-                severity: rule.severity,
-                message: rule.message,
-                count: matches.length,
-            });
+        if (rule.id === "high_entropy_secret") continue; // handled later
+        // Determine applicable files for this rule
+        const applicableFiles = files.filter(f => ruleAppliesToFile(rule.id, f.filename));
+        for (const file of applicableFiles) {
+            const fileDiff = fileDiffMap[file.filename] || [];
+            for (const { lineNumber, text } of fileDiff) {
+                if (rule.pattern.test(text) && !isAllowlisted(text)) {
+                    findings.push({
+                        id: rule.id,
+                        severity: rule.severity,
+                        message: rule.message,
+                        file: file.filename,
+                        line: lineNumber,
+                        suggestion: rule.suggestion || null,
+                        count: 1,
+                    });
+                }
+                // Reset lastIndex for global regexes
+                rule.pattern.lastIndex = 0;
+            }
+        }
+    }
+
+    // Second pass – entropy based secret detection
+    const entropyMatches = diff.match(/[A-Za-z0-9+/=]{20,}/g) || [];
+    for (const candidate of entropyMatches) {
+        if (shannonEntropy(candidate) >= ENTROPY_THRESHOLD && !isAllowlisted(candidate)) {
+            // Find the file & line where candidate appears (quick scan)
+            for (const [filename, lines] of Object.entries(fileDiffMap)) {
+                const matchLine = lines.find(l => l.text.includes(candidate));
+                if (matchLine) {
+                    findings.push({
+                        id: "high_entropy_secret",
+                        severity: "HIGH",
+                        message: `Potential high‑entropy secret detected: "${candidate.slice(0, 12)}…`,
+                        file: filename,
+                        line: matchLine.lineNumber,
+                        suggestion: "Consider moving this value to a secret manager or env var.",
+                        count: 1,
+                    });
+                    break;
+                }
+            }
         }
     }
 
@@ -207,13 +348,23 @@ function runRulesEngine(diff, files) {
     return findings;
 }
 
+/**
+ * Updated formatter that prints file and line when present.
+ */
 function formatFindings(findings) {
     if (findings.length === 0) return "✅ **No issues detected by rules engine.**";
     return findings
-        .map(f => `- ${SEVERITY_EMOJI[f.severity]} **[${f.severity}]** ${f.message}${f.count > 1 ? ` (${f.count}x)` : ""}`)
+        .map(f => {
+            const location = f.file ? `(${f.file}:${f.line})` : "";
+            const suggestion = f.suggestion ? `\n  💡 Suggestion: ${f.suggestion}` : "";
+            return `- ${SEVERITY_EMOJI[f.severity]} **[${f.severity}]** ${f.message} ${location}${f.count > 1 ? ` (${f.count}x)` : ""}${suggestion}`;
+        })
         .join("\n");
 }
 
+/**
+ * Updated summary to count per‑severity.
+ */
 function getRulesSummary(findings) {
     const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
     findings.forEach(f => counts[f.severity]++);
